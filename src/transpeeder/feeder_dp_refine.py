@@ -22,8 +22,8 @@ from .utilsTool.data.raw_datasets import *
 
 
 IGNORE_INDEX = -100
-DEFAULT_PAD_TOKEN = "[PAD]"
-DEFAULT_EOS_TOKEN = "</s>"
+DEFAULT_PAD_TOKEN = "<|EOT|>"
+DEFAULT_EOS_TOKEN = "<|EOT|>"
 DEFAULT_BOS_TOKEN = "<s>"
 DEFAULT_UNK_TOKEN = "<unk>"
 
@@ -279,7 +279,7 @@ class PromptTemplateDatasetRLHF(Dataset):
                         break
 
         logger.info(f'total samples num: {len(self.samples)}')
-        self.samples = self.samples[:20]
+        # self.samples = self.samples[:20]
 
     def __len__(self):
         return len(self.samples)
@@ -301,6 +301,7 @@ class PromptTemplateDatasetDPO(Dataset):
 
         error_count = defaultdict(int)
         ERROR_THRESHOLD = 10
+        print("#############loading dpo data啦#############")
         for single_file in tqdm(all_files, disable=not is_rank_0()):
             with (single_file).open(encoding='utf-8') as f:
                 for lnum, ln in enumerate(f):
@@ -322,15 +323,15 @@ class PromptTemplateDatasetDPO(Dataset):
                         #     prompt=prompt,
                         #     output=output + eos,
                         # ))
-                        prompt_template = [dict(
-                            role="user",
-                            content=prompt
-                        )]
+                        # prompt_template = [dict(
+                        #     role="user",
+                        #     content=prompt
+                        # )]
                         dict_data = dict(
-                            prompt=tokenizer_actor.apply_chat_template([dict(role="user",content=prompt)], tokenize=False, add_generation_prompt=True),
-                            output=output + '<|im_end|>',
-                            chosen=chosen + '<|im_end|>',
-                            rejected=rejected + '<|im_end|>',
+                            prompt= prompt + DEFAULT_EOS_TOKEN,# tokenizer_actor.apply_chat_template([dict(role="user",content=prompt)], tokenize=False, add_generation_prompt=True),
+                            output=output + DEFAULT_EOS_TOKEN, 
+                            chosen=chosen + DEFAULT_EOS_TOKEN, 
+                            rejected=rejected + DEFAULT_EOS_TOKEN, 
                         )
                         self.samples.append(dict_data)
                     except:
@@ -342,7 +343,8 @@ class PromptTemplateDatasetDPO(Dataset):
                         break
 
         logger.info(f'total samples num: {len(self.samples)}')
-        self.samples = self.samples[:50]
+        # print("##########debug here at feeder_dp_refine#############")
+        # self.samples = self.samples[:1000]
 
     def __len__(self):
         return len(self.samples)
@@ -447,8 +449,12 @@ class DataCollatorForPromptDataset(object):
         # sp_range = seq_length // self.sequence_parallel_world_size
 
         labels = torch.stack(labels)
-        labels = torch.where(input_ids == self.tokenizer.pad_token_id, IGNORE_INDEX, labels)
 
+        # labels = torch.where(input_ids == self.tokenizer.pad_token_id, IGNORE_INDEX, labels)
+        if self.tokenizer.pad_token_id == self.tokenizer.eos_token_id:
+            labels = torch.where(input_ids == self.tokenizer.pad_token_id, IGNORE_INDEX, labels)
+        else:
+            labels = torch.where(labels == self.tokenizer.pad_token_id, IGNORE_INDEX, labels)
         position_ids = DataCollatorForPromptDataset.get_position_ids(input_ids)
         attn_mask = DataCollatorForPromptDataset.get_attn_mask(input_ids.shape[0], input_ids.shape[1])
 
@@ -568,7 +574,11 @@ class DataCollatorForPromptDatasetSP(object):
         sp_range = seq_length // self.sequence_parallel_world_size
 
         labels = torch.stack(labels)
-        labels = torch.where(input_ids == self.tokenizer.pad_token_id, IGNORE_INDEX, labels)
+        # labels = torch.where(input_ids == self.tokenizer.pad_token_id, IGNORE_INDEX, labels)
+        if self.tokenizer.pad_token_id == self.tokenizer.eos_token_id:
+            labels = torch.where(input_ids == self.tokenizer.pad_token_id, IGNORE_INDEX, labels)
+        else:
+            labels = torch.where(labels == self.tokenizer.pad_token_id, IGNORE_INDEX, labels)
 
         # 检测是否开启sp，sequence切分
         if self.seq_parallel_rank != -1:
@@ -669,7 +679,11 @@ class DataCollatorForPromptDatasetDPO(object):
         # seq_length = input_ids.shape[1]
         # sp_range = seq_length // self.sequence_parallel_world_size
 
-        labels = torch.where(input_ids == self.tokenizer_actor.pad_token_id, IGNORE_INDEX, labels)
+        # labels = torch.where(input_ids == self.tokenizer_actor.pad_token_id, IGNORE_INDEX, labels)
+        if self.tokenizer_actor.pad_token_id == self.tokenizer_actor.eos_token_id:
+            labels = torch.where(input_ids == self.tokenizer_actor.pad_token_id, IGNORE_INDEX, labels)
+        else:
+            labels = torch.where(labels == self.tokenizer_actor.pad_token_id, IGNORE_INDEX, labels)
 
         position_ids = DataCollatorForPromptDataset.get_position_ids(input_ids)
         attn_mask = DataCollatorForPromptDataset.get_attn_mask(input_ids.shape[0], input_ids.shape[1])
@@ -684,6 +698,7 @@ class DataCollatorForPromptDatasetDPO(object):
 
 @dataclass
 class DataCollatorForPromptDatasetStep2DPO(object):
+    
     """Collate for supervised fine-tuning."""
     def __call__(self, samples: Sequence[Dict]) -> Dict[str, torch.Tensor]:
         chosen_input_ids = [sample["chosen_input_ids"] for sample in samples]
@@ -959,4 +974,58 @@ def make_prompt_template_dataloader_dpo_step2_transpeeder(dataset, data_args, en
                             # shuffle=True,
                             drop_last=True,
                             generator=g,)
+    print("......debug here.....")
+    # print(next(dataloader.))
+    # import pdb; pdb.set_trace()
+    return iter(deepspeed.utils.RepeatingLoader(dataloader))
+
+class DatasetDPOLogits(Dataset):
+    """ Dataset for dpo. """
+
+    def __init__(self, data_path: Union[str, Path]):
+        super().__init__()
+        if isinstance(data_path, str):
+            data_path = Path(data_path)
+        assert data_path.exists(), f'{data_path} does not exists.'
+
+        self.samples = []
+        all_files = list(data_path.glob('**/*.pt') if data_path.is_dir() else [data_path])
+
+        for single_file in tqdm(all_files, disable=not is_rank_0()):
+            self.samples.extend(torch.load(single_file))
+
+        logger.info(f'total samples num: {len(self.samples)}')
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index) -> Dict[str, str]:
+        # TODO: preprocess here and caching on the fly.
+        return self.samples[index]
+        
+def make_prompt_template_dataloader_dpo_step2_transpeeder_logits(data_path, data_args, engine, val_split=None) -> Dict:
+    # TODO add eval dataloader
+    assert val_split is None
+    dataset = DatasetDPOLogits(data_path=data_path)
+    data_collator = DataCollatorForPromptDatasetStep2DPO()
+
+    g = torch.Generator()
+    # print("setting shuffle--True")
+    print("refine dp")
+    
+    train_sampler = DistributedSampler(dataset,
+                    num_replicas=engine.actor.dp_world_size,
+                    rank=engine.actor.mpu.get_data_parallel_rank(),
+                    shuffle=True)
+    dataloader = DataLoader(dataset,
+                            collate_fn=data_collator,
+                            num_workers=data_args.num_workers,
+                            batch_size=data_args.batch_size,
+                            sampler=train_sampler,
+                            # shuffle=True,
+                            drop_last=True,
+                            generator=g,)
+    print("......debug here.....")
+    # print(next(dataloader.))
+    # import pdb; pdb.set_trace()
     return iter(deepspeed.utils.RepeatingLoader(dataloader))
