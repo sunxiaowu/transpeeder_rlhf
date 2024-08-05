@@ -123,8 +123,8 @@ class TrainerArguments:
 
     # dpo
     dpo_epochs: int = field(default=4)
-    actor_gradient_accumulation_steps: int = field(default=128)
-    loss_type: Literal["sigmoid", "robust", "hinge", "ipo", "kto_pair", "bco_pair",'sppo_hard', "nca_pair", "orpo", "simpo"] = 'sigmoid'
+    actor_gradient_accumulation_steps: int = field(default=8)
+    loss_type: Literal["sigmoid", "robust", "hinge", "ipo", "kto_pair", "bco_pair",'sppo_hard', "nca_pair", "orpo", "simpo", "dpop"] = 'sigmoid'
     use_ref_model: bool = field(default=True)
     beta: float = field(default=0.1)
     reference_free: bool = field(default=False)
@@ -137,7 +137,7 @@ class TrainerArguments:
     cache_dir: Optional[str] = field(default=None)
     output_dir: str = field(default="./output")
     max_seq_len: int = field(default=128)
-    train_steps: int = field(default=100)
+    train_steps: int = field(default=100,metadata={})
     eval_steps: int = field(default=100)
     save_steps: int = field(default=100)
     save_epoch_each: int = field(default=1)
@@ -202,7 +202,8 @@ def main():
     rlhf_engine = DeepSpeedDPOEngine(args=args, tokenizer_actor=tokenizer_actor, tokenizer_ref=tokenizer_critic)
     if args.use_ref_model:
         rlhf_engine.load_ref_pipeline(ref_model_name_or_path=args.critic_model_name_or_path)
-    # rlhf_engine.load_actor_pipeline(actor_model_name_or_path=args.actor_model_name_or_path)
+    else:
+        rlhf_engine.load_actor_pipeline(actor_model_name_or_path=args.actor_model_name_or_path)
     a = 3
     # exit(0)
 
@@ -239,17 +240,18 @@ def main():
         
             print_rank_0(f"ref model calculate step:{step_0}, finished data num:{len(exp_train_dataset)}", args.local_rank)
         # 撤销ref model，加载actor model
-        torch.distributed.barrier()
-        print_rank_0("load actor model ...", rank=args.local_rank)
-        rlhf_engine.ref.cpu()
-        rlhf_engine.ref.reset_activation_shape()
-        del rlhf_engine.ref
-        torch.cuda.empty_cache()
-
-        rlhf_engine.load_actor_pipeline(actor_model_name_or_path=args.actor_model_name_or_path)
-        trainer.actor_model = rlhf_engine.actor 
-        trainer.actor_model._config.gradient_accumulation_steps = args.actor_gradient_accumulation_steps
-        trainer.actor_model.micro_batches = trainer.actor_model.gradient_accumulation_steps()
+        if args.use_ref_model:
+            torch.distributed.barrier()
+            print_rank_0("load actor model ...", rank=args.local_rank)
+            rlhf_engine.ref.cpu()
+            rlhf_engine.ref.reset_activation_shape()
+            del rlhf_engine.ref
+            torch.cuda.empty_cache()
+            rlhf_engine.load_actor_pipeline(actor_model_name_or_path=args.actor_model_name_or_path)
+            trainer.actor_model = rlhf_engine.actor 
+            trainer.actor_model._config.gradient_accumulation_steps = args.actor_gradient_accumulation_steps
+            trainer.actor_model.micro_batches = trainer.actor_model.gradient_accumulation_steps()
+            
         # 构造训练的dataloader
         train_dataloader = make_prompt_template_dataloader_dpo_step2_transpeeder(exp_train_dataset, data_args=args, engine=rlhf_engine)
         #  start training...
