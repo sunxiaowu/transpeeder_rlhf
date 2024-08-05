@@ -249,6 +249,7 @@ def main():
         rlhf_engine.load_actor_pipeline(actor_model_name_or_path=args.actor_model_name_or_path)
         trainer.actor_model = rlhf_engine.actor 
         trainer.actor_model._config.gradient_accumulation_steps = args.actor_gradient_accumulation_steps
+        trainer.actor_model.micro_batches = trainer.actor_model.gradient_accumulation_steps()
         # 构造训练的dataloader
         train_dataloader = make_prompt_template_dataloader_dpo_step2_transpeeder(exp_train_dataset, data_args=args, engine=rlhf_engine)
         #  start training...
