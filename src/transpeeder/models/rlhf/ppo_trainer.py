@@ -1141,7 +1141,7 @@ class DeepSpeedDPOTrainer():
             return to_device({
             "prompt":prompts,
             "input_ids":input_ids,
-            "position_ids":position_ids,
+            # "position_ids":position_ids,
             "mask":mask,
             "labels":labels,
             "reference_chosen_logps":torch.tensor(0.1),
@@ -1189,7 +1189,7 @@ class DeepSpeedDPOTrainer():
         return to_device({
             "prompt":prompts,
             "input_ids":input_ids,
-            "position_ids":position_ids,
+            # "position_ids":position_ids,
             "mask":mask,
             "labels":labels,
             "reference_chosen_logps":reference_chosen_logps,
